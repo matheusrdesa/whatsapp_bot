@@ -27,6 +27,8 @@ if not PHONE_NUMBER_ID:
 if not GROQ_API_KEY:
     raise RuntimeError("Faltou GROQ_API_KEY no ambiente.")
 
+SIMULATE = (os.environ.get("WHATSAPP_TOKEN", "") == "FAKE")
+
 # Cliente OpenAI compatível apontando para Groq
 client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=GROQ_API_KEY)
 
@@ -39,6 +41,9 @@ history: History = defaultdict(lambda: deque(maxlen=10))
 GRAPH_BASE = "https://graph.facebook.com/v19.0"
 
 async def send_whatsapp_text(to_phone: str, text: str):
+    if SIMULATE:
+        print(f"[SIMULATE] Responder para {to_phone}: {text[:120]}...")
+        return
     url = f"{GRAPH_BASE}/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
