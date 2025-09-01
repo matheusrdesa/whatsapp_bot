@@ -12,7 +12,7 @@ from openai import OpenAI
 # - Histórico curto em memória por usuário
 
 # === Variáveis de ambiente ===
-VERIFY_TOKEN = os.environ.get("APP_VERIFY_TOKEN", "teamomae")          # token de verificação do webhook (definido por você)
+VERIFY_TOKEN = os.environ.get("APP_VERIFY_TOKEN", "")          # token de verificação do webhook (definido por você)
 WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "FAKE")          # token Bearer da Cloud API (Meta)
 PHONE_NUMBER_ID = os.environ.get("WHATSAPP_PHONE_NUMBER_ID", "")  # ID do número no WhatsApp Business
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
