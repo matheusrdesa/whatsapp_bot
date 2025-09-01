@@ -1,5 +1,6 @@
 import os
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import FastAPI, Request, HTTPException, Query
+from starlette.responses import PlainTextResponse
 import httpx
 from typing import Dict, Deque, Optional
 from collections import defaultdict, deque
@@ -65,12 +66,14 @@ def health():
 
 # Verificação do webhook (setup via Meta > Webhooks)
 @app.get("/webhook")
-async def verify(mode: Optional[str] = None, challenge: Optional[str] = None, hub_verify_token: Optional[str] = None, **kwargs):
-    # Meta envia como: hub.mode, hub.verify_token, hub.challenge
-    if hub_verify_token != VERIFY_TOKEN:
-        raise HTTPException(403, "Invalid verify token")
-    # challenge pode vir como string; devolver como texto é suficiente
-    return challenge or "OK"
+async def verify_webhook(
+    mode: Optional[str] = Query(None, alias="hub.mode"),
+    token: Optional[str] = Query(None, alias="hub.verify_token"),
+    challenge: Optional[str] = Query(None, alias="hub.challenge"),
+):
+    if mode == "subscribe" and token == VERIFY_TOKEN and challenge:
+        return PlainTextResponse(challenge, status_code=200)
+    raise HTTPException(status_code=403, detail="Verification failed")
 
 @app.post("/webhook")
 async def incoming(request: Request):
