@@ -13,7 +13,7 @@ from openai import OpenAI
 
 # === Variáveis de ambiente ===
 VERIFY_TOKEN = os.environ.get("APP_VERIFY_TOKEN", "")          # token de verificação do webhook (definido por você)
-WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "FAKE")          # token Bearer da Cloud API (Meta)
+WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")          # token Bearer da Cloud API (Meta)
 PHONE_NUMBER_ID = os.environ.get("WHATSAPP_PHONE_NUMBER_ID", "")  # ID do número no WhatsApp Business
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 MODEL_ID = os.environ.get("MODEL_ID", "llama-3.1-8b-instant")
