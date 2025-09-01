@@ -48,9 +48,31 @@ def normalize_msisdn(raw: Optional[str]) -> str:
     return "".join(ch for ch in (raw or "") if ch.isdigit())
 
 
+def fix_br_mobile_if_needed(n: str) -> str:
+    """
+    Heurística para Brasil (opcional, útil em DEV):
+    Insere '9' após o DDD quando vier com 12 dígitos (sem o 9).
+    Não altera números já corretos (13+ dígitos) nem de outros países.
+    """
+    if n.startswith("55") and len(n) == 12:
+        ddd = n[2:4]
+        resto = n[4:]
+        if len(resto) == 8:  # 2 (DDD) + 8 = 10 locais -> falta o '9'
+            return f"55{ddd}9{resto}"
+    return n
+
+
 async def send_whatsapp_text(to_phone: str, text: str):
-    """Envia texto para a Cloud API. Não levanta exceção em 4xx para não virar 500 no webhook."""
+    """
+    Envia texto para a Cloud API. Não levanta exceção em 4xx para não virar 500 no webhook.
+    Aplica normalização e, opcionalmente (apenas em DEV), corrige celulares BR sem '9'.
+    """
     to_phone = normalize_msisdn(to_phone)
+
+    # Salvaguarda: só aplica a heurística quando SIMULATE ou app em dev.
+    # Se preferir sempre usar o número exato da allow-list, pode remover esta linha.
+    if os.environ.get("APP_ENV", "development") != "production":
+        to_phone = fix_br_mobile_if_needed(to_phone)
 
     if SIMULATE:
         print(f"[SIMULATE] -> {to_phone}: {text[:180]}")
@@ -98,7 +120,6 @@ async def verify_webhook(
     token: Optional[str] = Query(None, alias="hub.verify_token"),
     challenge: Optional[str] = Query(None, alias="hub.challenge"),
 ):
-    # Meta envia hub.mode=subscribe, hub.verify_token=..., hub.challenge=...
     if mode == "subscribe" and token == VERIFY_TOKEN and challenge:
         return PlainTextResponse(challenge, status_code=200)
     raise HTTPException(status_code=403, detail="Verification failed")
@@ -128,8 +149,16 @@ async def incoming(request: Request):
 
     message = messages[0]
     msg_type = message.get("type")
-    from_phone = normalize_msisdn(message.get("from"))  # normaliza o número remetente
-    print(f"Mensagem de {from_phone} com type={msg_type}")
+
+    # Preferir o wa_id, que já vem padronizado em E.164 pela Cloud API
+    contacts = value.get("contacts", [])
+    wa_id = normalize_msisdn((contacts[0] or {}).get("wa_id") if contacts else None)
+    from_msg = normalize_msisdn(message.get("from"))
+
+    # Fonte de verdade do remetente: wa_id -> fallback para from
+    from_phone = wa_id or from_msg
+
+    print(f"Contato (wa_id)={wa_id} | from={from_msg} | usando={from_phone} | type={msg_type}")
 
     if msg_type != "text":
         if from_phone:
