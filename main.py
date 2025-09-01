@@ -1,23 +1,21 @@
 import os
-from fastapi import FastAPI, Request, HTTPException, Query
-from starlette.responses import PlainTextResponse
-import httpx
 from typing import Dict, Deque, Optional
 from collections import defaultdict, deque
+
+import httpx
+from fastapi import FastAPI, Request, HTTPException, Query
+from starlette.responses import PlainTextResponse
 from openai import OpenAI
 
-# WhatsApp Cloud API + FastAPI + Groq (OpenAI-compatible)
-# - Verificação de webhook (GET /webhook): responde hub.challenge
-# - Recebimento de mensagens (POST /webhook)
-# - Resposta com LLM da Groq
-# - Histórico curto em memória por usuário
-
-# === Variáveis de ambiente ===
-VERIFY_TOKEN = os.environ.get("APP_VERIFY_TOKEN", "")          # token de verificação do webhook (definido por você)
-WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")          # token Bearer da Cloud API (Meta)
-PHONE_NUMBER_ID = os.environ.get("WHATSAPP_PHONE_NUMBER_ID", "")  # ID do número no WhatsApp Business
+# =========================
+# Variáveis de ambiente
+# =========================
+VERIFY_TOKEN = os.environ.get("APP_VERIFY_TOKEN", "")
+WHATSAPP_TOKEN = os.environ.get("WHATSAPP_TOKEN", "")
+PHONE_NUMBER_ID = os.environ.get("WHATSAPP_PHONE_NUMBER_ID", "")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 MODEL_ID = os.environ.get("MODEL_ID", "llama-3.1-8b-instant")
+TEST_RECIPIENT = os.environ.get("TEST_RECIPIENT", "")  # opcional: para /ping
 
 if not VERIFY_TOKEN:
     raise RuntimeError("Faltou APP_VERIFY_TOKEN no ambiente.")
@@ -28,22 +26,38 @@ if not PHONE_NUMBER_ID:
 if not GROQ_API_KEY:
     raise RuntimeError("Faltou GROQ_API_KEY no ambiente.")
 
-SIMULATE = (os.environ.get("WHATSAPP_TOKEN", "") == "FAKE")
+SIMULATE = (WHATSAPP_TOKEN == "FAKE")
 
-# Cliente OpenAI compatível apontando para Groq
+# =========================
+# Clientes e estado
+# =========================
 client = OpenAI(base_url="https://api.groq.com/openai/v1", api_key=GROQ_API_KEY)
-
 app = FastAPI(title="WhatsApp LLM Bot (Groq)")
 
-# Histórico curto em memória por remetente (número de telefone)
 History = Dict[str, Deque[dict]]
 history: History = defaultdict(lambda: deque(maxlen=10))
 
 GRAPH_BASE = "https://graph.facebook.com/v19.0"
 
+
+# =========================
+# Utilitários
+# =========================
+def normalize_msisdn(raw: Optional[str]) -> str:
+    """Mantém apenas dígitos do número. Ex.: '+55 (62) 99905-4475' -> '5562999054475'."""
+    return "".join(ch for ch in (raw or "") if ch.isdigit())
+
+
 async def send_whatsapp_text(to_phone: str, text: str):
+    """Envia texto para a Cloud API. Não levanta exceção em 4xx para não virar 500 no webhook."""
+    to_phone = normalize_msisdn(to_phone)
+
     if SIMULATE:
-        print(f"[SIMULATE] Responder para {to_phone}: {text[:120]}...")
+        print(f"[SIMULATE] -> {to_phone}: {text[:180]}")
+        return
+
+    if not to_phone:
+        print("[WA SEND ERROR] Número destino vazio/ inválido.")
         return
 
     url = f"{GRAPH_BASE}/{PHONE_NUMBER_ID}/messages"
@@ -60,34 +74,45 @@ async def send_whatsapp_text(to_phone: str, text: str):
 
     try:
         async with httpx.AsyncClient(timeout=20) as http:
+            print("[WA REQUEST]", url, payload)  # log de diagnóstico
             r = await http.post(url, headers=headers, json=payload)
-            if r.status_code >= 400:
-                print("[WA SEND ERROR]", r.status_code, r.text)
-            else:
-                print("[WA OK]", r.status_code, r.text)
+            print("[WA RESPONSE]", r.status_code, r.text)
     except Exception as e:
-        print("[WA EXCEPTION]", e)
+        print("[WA EXCEPTION]", repr(e))
 
+
+# =========================
+# Healthcheck
+# =========================
 @app.get("/")
 def health():
     return {"status": "ok"}
 
-# Verificação do webhook (setup via Meta > Webhooks)
+
+# =========================
+# Verificação do webhook
+# =========================
 @app.get("/webhook")
 async def verify_webhook(
     mode: Optional[str] = Query(None, alias="hub.mode"),
     token: Optional[str] = Query(None, alias="hub.verify_token"),
     challenge: Optional[str] = Query(None, alias="hub.challenge"),
 ):
+    # Meta envia hub.mode=subscribe, hub.verify_token=..., hub.challenge=...
     if mode == "subscribe" and token == VERIFY_TOKEN and challenge:
         return PlainTextResponse(challenge, status_code=200)
     raise HTTPException(status_code=403, detail="Verification failed")
 
+
+# =========================
+# Recebimento de mensagens
+# =========================
 @app.post("/webhook")
 async def incoming(request: Request):
     data = await request.json()
-    print("==> WEBHOOK RECEBIDO:", data)  # debug
+    print("==> WEBHOOK RECEBIDO:", data)
 
+    # Estrutura típica: entry[0].changes[0].value.messages[0]
     try:
         entry = data.get("entry", [])[0]
         change = entry.get("changes", [])[0]
@@ -96,14 +121,14 @@ async def incoming(request: Request):
         print("parse error:", e)
         return {"ok": True}
 
-    # Ignora eventos que não são novas mensagens (ex.: statuses, delivery, etc.)
+    # Ignora eventos que não são novas mensagens (statuses, delivery etc.)
     messages = value.get("messages", [])
     if not messages:
         return {"ok": True}
 
     message = messages[0]
     msg_type = message.get("type")
-    from_phone = message.get("from")  # ex.: "5562..."
+    from_phone = normalize_msisdn(message.get("from"))  # normaliza o número remetente
     print(f"Mensagem de {from_phone} com type={msg_type}")
 
     if msg_type != "text":
@@ -131,7 +156,7 @@ async def incoming(request: Request):
         await send_whatsapp_text(from_phone, "Comandos: /help, /start, /reset")
         return {"ok": True}
 
-    # Contexto + LLM
+    # Contexto + LLM (Groq)
     msgs = list(history[from_phone])
     msgs.append({"role": "user", "content": text_body})
 
@@ -144,11 +169,30 @@ async def incoming(request: Request):
         )
         answer = completion.choices[0].message.content or "Desculpe, não consegui responder agora."
     except Exception as e:
-        print("Erro no LLM:", e)
+        print("Erro no LLM:", repr(e))
         answer = "Ops! Tive um problema ao falar com o modelo. Tente novamente em alguns segundos."
 
+    # Persiste histórico curto
     history[from_phone].append({"role": "user", "content": text_body})
     history[from_phone].append({"role": "assistant", "content": answer})
 
     await send_whatsapp_text(from_phone, answer)
+    return {"ok": True}
+
+
+# =========================
+# Teste de envio independente do webhook
+# =========================
+@app.get("/ping")
+async def ping():
+    """
+    Envia 'pong 🏓' para TEST_RECIPIENT definido no ambiente.
+    Útil para validar o envio sem depender do webhook.
+    """
+    if not TEST_RECIPIENT:
+        return {
+            "ok": False,
+            "msg": "Defina TEST_RECIPIENT no ambiente (ex.: 5562999054475, só dígitos)."
+        }
+    await send_whatsapp_text(TEST_RECIPIENT, "pong 🏓")
     return {"ok": True}
