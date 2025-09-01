@@ -57,13 +57,16 @@ async def send_whatsapp_text(to_phone: str, text: str):
         "type": "text",
         "text": {"body": text},
     }
-    async with httpx.AsyncClient(timeout=20) as http:
-        r = await http.post(url, headers=headers, json=payload)
-        if r.status_code >= 400:
-            # <<< DEBUG IMPORTANTE
-            print("[WA SEND ERROR]", r.status_code, r.text)
-            # Não levanta exceção para não virar 500 na sua API:
-            return
+
+    try:
+        async with httpx.AsyncClient(timeout=20) as http:
+            r = await http.post(url, headers=headers, json=payload)
+            if r.status_code >= 400:
+                print("[WA SEND ERROR]", r.status_code, r.text)
+            else:
+                print("[WA OK]", r.status_code, r.text)
+    except Exception as e:
+        print("[WA EXCEPTION]", e)
 
 @app.get("/")
 def health():
@@ -83,27 +86,36 @@ async def verify_webhook(
 @app.post("/webhook")
 async def incoming(request: Request):
     data = await request.json()
-    # Estrutura: entry[0].changes[0].value.messages[0]
+    print("==> WEBHOOK RECEBIDO:", data)  # debug
+
     try:
         entry = data.get("entry", [])[0]
         change = entry.get("changes", [])[0]
         value = change.get("value", {})
-    except Exception:
+    except Exception as e:
+        print("parse error:", e)
         return {"ok": True}
 
+    # Ignora eventos que não são novas mensagens (ex.: statuses, delivery, etc.)
     messages = value.get("messages", [])
     if not messages:
         return {"ok": True}
 
     message = messages[0]
-    from_phone = message.get("from")  # ex.: "5511999999999"
-    text_body = ""
+    msg_type = message.get("type")
+    from_phone = message.get("from")  # ex.: "5562..."
+    print(f"Mensagem de {from_phone} com type={msg_type}")
 
-    if message.get("type") == "text":
-        text_body = (message.get("text") or {}).get("body", "").strip()
-    else:
+    if msg_type != "text":
         if from_phone:
-            await send_whatsapp_text(from_phone, "No momento só entendo mensagens de texto. Envie sua pergunta 🙂")
+            await send_whatsapp_text(
+                from_phone,
+                "No momento só entendo mensagens de *texto*. Envie sua pergunta 🙂"
+            )
+        return {"ok": True}
+
+    text_body = (message.get("text") or {}).get("body", "").strip()
+    if not text_body:
         return {"ok": True}
 
     # Comandos simples
@@ -126,17 +138,15 @@ async def incoming(request: Request):
     try:
         completion = client.chat.completions.create(
             model=MODEL_ID,
-            messages=[
-                {"role": "system", "content": "Responda em português do Brasil, de forma objetiva e útil."}
-            ] + msgs,
+            messages=[{"role": "system", "content": "Responda em português do Brasil, de forma objetiva e útil."}] + msgs,
             temperature=0.6,
             max_tokens=512,
         )
         answer = completion.choices[0].message.content or "Desculpe, não consegui responder agora."
-    except Exception:
+    except Exception as e:
+        print("Erro no LLM:", e)
         answer = "Ops! Tive um problema ao falar com o modelo. Tente novamente em alguns segundos."
 
-    # persiste histórico e responde
     history[from_phone].append({"role": "user", "content": text_body})
     history[from_phone].append({"role": "assistant", "content": answer})
 
