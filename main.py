@@ -45,6 +45,7 @@ async def send_whatsapp_text(to_phone: str, text: str):
     if SIMULATE:
         print(f"[SIMULATE] Responder para {to_phone}: {text[:120]}...")
         return
+
     url = f"{GRAPH_BASE}/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {WHATSAPP_TOKEN}",
@@ -58,7 +59,11 @@ async def send_whatsapp_text(to_phone: str, text: str):
     }
     async with httpx.AsyncClient(timeout=20) as http:
         r = await http.post(url, headers=headers, json=payload)
-        r.raise_for_status()
+        if r.status_code >= 400:
+            # <<< DEBUG IMPORTANTE
+            print("[WA SEND ERROR]", r.status_code, r.text)
+            # Não levanta exceção para não virar 500 na sua API:
+            return
 
 @app.get("/")
 def health():
